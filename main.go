@@ -23,7 +23,7 @@ func init() {
 	cache.Init()
 }
 
-var Version = "v1.0.19"
+var Version = "v1.1.2"
 
 type Task struct {
 	Id string `json:"id"`
@@ -39,6 +39,7 @@ func main() {
 	var versin *bool
 	var log *bool
 	var check *string
+
 	//
 	port = flag.String("port", "8085", "默认8085")
 	path = flag.String("path", "./", "")

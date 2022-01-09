@@ -2,19 +2,20 @@ package aliyun
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"io/ioutil"
 	"go-aliyun-webdav/aliyun/cache"
 	"go-aliyun-webdav/aliyun/model"
 	"go-aliyun-webdav/aliyun/net"
+	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/tidwall/gjson"
 )
 
-func GetList(token string, driveId string, parentFileId string) (model.FileListModel, error) {
+func GetList(token string, driveId string, parentFileId string, marker ...string) (model.FileListModel, error) {
 
 	if len(parentFileId) == 0 {
 		parentFileId = "root"
@@ -40,6 +41,10 @@ func GetList(token string, driveId string, parentFileId string) (model.FileListM
 	postData["fields"] = "*"
 	postData["order_by"] = "updated_at"
 	postData["order_direction"] = "DESC"
+	//add marker post data
+	if len(marker) > 0 {
+		postData["marker"] = marker[0]
+	}
 
 	data, err := json.Marshal(postData)
 	if err != nil {
@@ -52,6 +57,12 @@ func GetList(token string, driveId string, parentFileId string) (model.FileListM
 	e := json.Unmarshal(body, &list)
 	if e != nil {
 		fmt.Println(e)
+	}
+	if list.NextMarker != "" {
+		var newList, _ = GetList(token, driveId, parentFileId, list.NextMarker)
+		list.Items = append(list.Items, newList.Items...)
+		list.NextMarker = newList.NextMarker
+		fmt.Println("next marker: " + list.NextMarker)
 	}
 	if len(list.Items) > 0 {
 		cache.GoCache.SetDefault(parentFileId, list)
@@ -114,33 +125,47 @@ func GetFile(w http.ResponseWriter, url string, token string, rangeStr string, i
 
 func RefreshToken(refreshToken string) model.RefreshTokenModel {
 	path := refreshToken
-	if _, err := os.Stat(path); err == nil {
+	if _, errs := os.Stat(path); errs == nil {
 		buf, _ := ioutil.ReadFile(path)
 		refreshToken = string(buf)
-		if(len(refreshToken) >= 32){
+		if len(refreshToken) >= 32 {
 			refreshToken = refreshToken[:32] // refreshToken is only 32 bit?? FIXME
 		}
 	}
 	rs := net.Post(model.APIREFRESHTOKENURL, "", []byte(`{"refresh_token":"`+refreshToken+`"}`))
 	var refresh model.RefreshTokenModel
-	if len(rs) > 0 {
-		err := json.Unmarshal(rs, &refresh)
-		if err != nil {
-			fmt.Println("刷新token失败,失败信息", err)
-			fmt.Println("刷新token返回信息", refresh)
-		}
-	} else {
+
+	if len(rs) <= 0 {
 		fmt.Println("刷新token失败")
+		return refresh
 	}
 
-	if _, err := os.Stat(path); err == nil {
-		if(refreshToken != refresh.RefreshToken){
-			content := []byte(refresh.RefreshToken)
-			ioutil.WriteFile(path, content, 0600)
-		}
+	err := json.Unmarshal(rs, &refresh)
+	if err != nil {
+		fmt.Println("刷新token失败,失败信息", err)
+		fmt.Println("刷新token返回信息", refresh)
+		return refresh
 	}
+
+	if refreshToken == refresh.RefreshToken {
+		return refresh
+	}
+
+	_, err = os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return refresh
+	}
+	if err != nil {
+		fmt.Println("更新token文件失败,失败信息", err)
+		return refresh
+	}
+
+	err = ioutil.WriteFile(path, []byte(refresh.RefreshToken), 0600)
+	if err != nil {
+		fmt.Println("更新token文件失败,失败信息", err)
+	}
+
 	return refresh
-
 }
 
 func RemoveTrash(token string, driveId string, fileId string, parentFileId string) bool {
